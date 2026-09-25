@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -17,20 +18,23 @@ type Backend struct {
 type LoadBalancer struct {
 	backends []Backend
 	counter  int
+	mu       sync.Mutex
 }
 
-func (lb *LoadBalancer) getNextBackend() (string, error) {
+func (lb *LoadBalancer) getNextBackend() (int, string, error) {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
 	for attempt := 0; attempt < len(lb.backends); attempt++ {
 		counter := lb.counter % len(lb.backends)
 		if lb.backends[counter].Healthy == true {
 			url := lb.backends[counter].URL
 			lb.counter++
-			return url, nil
+			return counter, url, nil
 		}
 		lb.counter++
 	}
 
-	return "", errors.New("No healthy instance found")
+	return 0, "", errors.New("No healthy instance found")
 }
 
 func (lb *LoadBalancer) checkHealthy(i int) {
@@ -42,16 +46,22 @@ func (lb *LoadBalancer) checkHealthy(i int) {
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		fmt.Printf("[HEALTH] %s -> unhealthy\n", lb.backends[i].URL)
+		lb.mu.Lock()
+		defer lb.mu.Unlock()
 		lb.backends[i].Healthy = false
 		return
 	}
 	defer res.Body.Close()
 	if res.StatusCode == 200 {
 		fmt.Printf("[HEALTH] %s -> healthy\n", lb.backends[i].URL)
+		lb.mu.Lock()
+		defer lb.mu.Unlock()
 		lb.backends[i].Healthy = true
 		return
 	}
 	fmt.Printf("[HEALTH] %s -> unhealthy\n", lb.backends[i].URL)
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
 	lb.backends[i].Healthy = false
 }
 
@@ -69,7 +79,7 @@ func (lb *LoadBalancer) checkAllBackends() {
 }
 
 func (lb *LoadBalancer) handleRequest(w http.ResponseWriter, r *http.Request) {
-	backend, err := lb.getNextBackend()
+	idx, backend, err := lb.getNextBackend()
 	if err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
@@ -85,6 +95,9 @@ func (lb *LoadBalancer) handleRequest(w http.ResponseWriter, r *http.Request) {
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		fmt.Println("[CLIENTREQCALL]Something happend")
+		lb.mu.Lock()
+		defer lb.mu.Unlock()
+		lb.backends[idx].Healthy = false
 		w.WriteHeader(http.StatusBadGateway)
 		return
 	}
