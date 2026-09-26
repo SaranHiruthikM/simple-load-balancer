@@ -1,0 +1,7 @@
+{
+  "backends": [
+    "http://localhost:9091",
+    "http://localhost:9092",
+    "http://localhost:9093"
+  ]
+}

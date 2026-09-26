@@ -1,14 +1,20 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 )
+
+type Config struct {
+	Backends []string `json:"backends"`
+}
 
 type Backend struct {
 	URL     string
@@ -19,6 +25,28 @@ type LoadBalancer struct {
 	backends []Backend
 	counter  int
 	mu       sync.Mutex
+}
+
+func loadConfig(path string) ([]Backend, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("unable to read config file: %w", err)
+	}
+
+	var config Config
+	if err := json.Unmarshal(content, &config); err != nil {
+		return nil, fmt.Errorf("unable to parse config file: %w", err)
+	}
+
+	var backends []Backend
+	for _, url := range config.Backends {
+		backends = append(backends, Backend{
+			URL:     url,
+			Healthy: true,
+		})
+	}
+
+	return backends, nil
 }
 
 func (lb *LoadBalancer) getNextBackend() (int, string, error) {
@@ -120,17 +148,16 @@ func (lb *LoadBalancer) handleRequest(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	// port := flag.Int("p1", 9091, "First Backend Port")
+	configPath := flag.String("config", "./backends.json", "path to backends config file")
 	flag.Parse()
+	backends, err := loadConfig(*configPath)
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
 	lb := LoadBalancer{
-		backends: []Backend{{
-			URL:     "http://localhost:9091",
-			Healthy: true,
-		},
-			{
-				URL:     "http://localhost:9092",
-				Healthy: true,
-			}},
-		counter: 0,
+		backends: backends,
+		counter:  0,
 	}
 	lb.checkAllBackends()
 	go lb.startHealthChecks()
